@@ -5,9 +5,167 @@ import os
 import json
 import collections # Added for defaultdict
 clang.cindex.Config.set_library_file("/usr/lib/llvm-15/lib/libclang.so")
-from code_comparison.C_Replace_by_name import find_var_outside_quotes
 # If needed, set the libclang path:
 # clang.cindex.Config.set_library_file('/path/to/libclang.so')
+
+import re
+import unittest
+from typing import List
+
+def get_variable_context_regex(input_string: str) -> str:
+    """
+    Generates a regex to find an input string when it's not immediately
+    preceded or followed by characters typically allowed within a C/C++
+    variable name (alphanumeric or underscore).
+
+    Args:
+        input_string: The literal string to search for.
+
+    Returns:
+        A raw regex string pattern.
+
+    Raises:
+        TypeError: If input_string is not a string.
+        ValueError: If input_string is empty.
+    """
+    if not isinstance(input_string, str):
+        raise TypeError("Input must be a string.")
+    if not input_string:
+        raise ValueError("Input string cannot be empty.")
+
+    escaped_input = re.escape(input_string)
+    # Character class for typical C/C++ variable name characters
+    var_char_class = r"[a-zA-Z0-9_]"
+    # Regex using negative lookbehind and lookahead
+    regex_pattern = rf"(?<!{var_char_class}){escaped_input}(?!{var_char_class})"
+    return regex_pattern
+
+def find_var_outside_quotes(target_string: str, text: str) -> List[re.Match]:
+    """
+    Finds occurrences of target_string in text that meet variable context
+    rules (using get_variable_context_regex) AND are not inside double
+    quotes ("..."). Handles escaped quotes (\").
+
+    Args:
+        target_string: The literal string (variable name) to search for.
+        text: The text content to search within.
+
+    Returns:
+        A list of re.Match objects for valid occurrences found outside
+        double quotes.
+
+    Raises:
+        TypeError: If target_string or text are not strings.
+        ValueError: If target_string is empty.
+    """
+    # Input validation
+    if not isinstance(target_string, str):
+        raise TypeError("Target string must be a string.")
+    if not isinstance(text, str):
+        raise TypeError("Text must be a string.")
+    if not target_string:
+        raise ValueError("Target string cannot be empty.")
+
+    # Get the base regex ensuring variable context
+    try:
+        base_regex = get_variable_context_regex(target_string)
+    except (TypeError, ValueError) as e:
+        # Propagate errors from regex generation
+        raise e
+
+    valid_matches: List[re.Match] = []
+
+    # Find all potential matches based on variable context first
+    for match in re.finditer(base_regex, text):
+        start_index = match.start()
+        preceding_text = text[:start_index]
+
+        # Count unescaped double quotes before the match's start position
+        # to determine if we are currently inside quotes.
+        quote_count = 0
+        i = 0
+        while i < len(preceding_text):
+            char = preceding_text[i]
+            if char == '"':
+                # Found an unescaped double quote
+                quote_count += 1
+            elif char == '\\':
+                # Found an escape character. Skip the *next* character,
+                # as it's escaped (e.g., \", \\, \n etc.)
+                # Ensure we don't go out of bounds if \ is the last char
+                if i + 1 < len(preceding_text):
+                    i += 1
+                # else: A trailing backslash - treat normally or raise error?
+                # Current behavior: allows it, next loop iteration handles normally.
+            i += 1
+
+        # If the number of unescaped double quotes is even,
+        # the match starts outside of a quoted section.
+        if quote_count % 2 == 0:
+            valid_matches.append(match)
+
+    return valid_matches
+
+def replace_var_outside_quotes(target_string: str, replacement_string: str, text: str) -> str:
+    """
+    Replaces occurrences of target_string with replacement_string in text,
+    but only when they meet variable context rules AND are not inside
+    double quotes (as determined by find_var_outside_quotes).
+
+    Args:
+        target_string: The string (variable name) to be replaced.
+        replacement_string: The string to replace with.
+        text: The text content to perform replacements on.
+
+    Returns:
+        A new string with the valid replacements made.
+
+    Raises:
+        TypeError: If target_string, replacement_string, or text are not strings.
+        ValueError: If target_string is empty.
+    """
+    # Input validation
+    if not isinstance(target_string, str):
+        raise TypeError("Target string must be a string.")
+    if not isinstance(replacement_string, str):
+        raise TypeError("Replacement string must be a string.")
+    if not isinstance(text, str):
+        raise TypeError("Text must be a string.")
+    if not target_string:
+        # Or return text depending on desired behavior for empty target
+        raise ValueError("Target string cannot be empty.")
+
+
+    # Find all valid matches first
+    try:
+        matches = find_var_outside_quotes(target_string, text)
+    except (TypeError, ValueError) as e:
+        # Propagate errors from finding matches
+        raise e
+
+    # If no valid matches were found, return the original text unmodified
+    if not matches:
+        return text
+
+    # Build the result string piece by piece, handling index shifts
+    result_parts = []
+    last_end = 0
+    
+    for match in matches:
+        start_pos = match.start()
+        end_pos = match.end()
+        
+        # Append the text segment before the current match
+        result_parts.append(text[last_end:start_pos])
+        # Append the replacement string
+        result_parts.append(replacement_string)
+        # Update the position for the next segment
+        last_end = end_pos
+
+    # Append the remaining part of the text after the last match
+    result_parts.append(text[last_end:])
+    
+    return "".join(result_parts)
 
 BOOST_INCLUDE_PATH = "/data/usr/codesearch/boost_installation/boost_1_74_0_installed_targets/include/" # Adjust if necessary
 
